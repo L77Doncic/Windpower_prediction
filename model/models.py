@@ -8,7 +8,7 @@ from sklearn.metrics import r2_score
 
 
 class EarlyStopping:
-    def __init__(self, patience=7, verbose=False, delta=0, checkpoint_dir='checkpoints'):
+    def __init__(self, patience=7, verbose=False, delta=0, checkpoint_dir='/root/model/checkpoints'):
         self.val_loss_min = np.inf  # 添加损失记录
         self.patience = patience
         self.delta = delta
@@ -225,27 +225,6 @@ class Discriminator(nn.Module):
         # x shape: [batch_size, seq_len, feature_dim]
         x_flat = x.view(x.size(0), -1)
         return self.model(x_flat)
-        self.task2 = nn.Sequential(
-            nn.Linear(transformer_hidden + pred_len, 128),
-            nn.ReLU(),
-            nn.Linear(128, pred_len)
-        )
-
-    def forward(self, past, future):
-        # 过去特征处理 [batch, seq_len, feat] -> [batch, channels, seq_len]
-        tcn_out = self.tcn(past.permute(0, 2, 1)).permute(0, 2, 1)
-
-        # ===== 替换后的Transformer处理 =====
-        trans_out = self.transformer(tcn_out)  # [batch, seq, transformer_hidden]
-        context = self.attention(trans_out)  # [batch, transformer_hidden]
-
-        # 未来特征处理 [batch, seq_len, feat] -> [batch, channels, seq_len]
-        future_features = self.future_resnet(future.permute(0, 2, 1))
-
-        # 特征融合
-        combined = torch.cat([context, future_features], dim=1)
-
-        return [self.task1(combined), self.task2(combined)]
 
 
 class DynamicWeightedLoss(nn.Module):

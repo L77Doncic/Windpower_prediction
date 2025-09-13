@@ -69,14 +69,16 @@ class WindDataset(Dataset):
             self.scaler_y.fit(train_data[self.target_cols].values)
 
             # 保存scaler
-            joblib.dump(self.scaler_x1, f'../output/scaler_{self.tid}_x1.pkl')
-            joblib.dump(self.scaler_x2, f'../output/scaler_{self.tid}_x2.pkl')
-            joblib.dump(self.scaler_y, f'../output/scaler_{self.tid}_y.pkl')
+            import os
+            os.makedirs('/root/model/output', exist_ok=True)
+            joblib.dump(self.scaler_x1, f'/root/model/output/scaler_{self.tid}_x1.pkl')
+            joblib.dump(self.scaler_x2, f'/root/model/output/scaler_{self.tid}_x2.pkl')
+            joblib.dump(self.scaler_y, f'/root/model/output/scaler_{self.tid}_y.pkl')
         else:
             # 加载训练集保存的scaler
-            self.scaler_x1 = joblib.load(f'../output/scaler_{self.tid}_x1.pkl')
-            self.scaler_x2 = joblib.load(f'../output/scaler_{self.tid}_x2.pkl')
-            self.scaler_y = joblib.load(f'../output/scaler_{self.tid}_y.pkl')
+            self.scaler_x1 = joblib.load(f'/root/model/output/scaler_{self.tid}_x1.pkl')
+            self.scaler_x2 = joblib.load(f'/root/model/output/scaler_{self.tid}_x2.pkl')
+            self.scaler_y = joblib.load(f'/root/model/output/scaler_{self.tid}_y.pkl')
 
         # 对所有数据应用归一化（使用训练集的scaler参数）
         x1_norm = self.scaler_x1.transform(df[self.use_cols].values)

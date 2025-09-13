@@ -222,6 +222,12 @@ def train(df, turbine_id):
     plt.plot(corrected_pred_y[:100], '-o', label="Corrected Pred")
     plt.legend()
     plt.tight_layout()
+    
+    # 创建图表保存目录
+    import os
+    plot_dir = '/root/model/plots'
+    os.makedirs(plot_dir, exist_ok=True)
+    plt.savefig(f'{plot_dir}/turbine_{turbine_id}_prediction.png')
     plt.show()
 
     print("---------------------------------------------------------")
@@ -243,14 +249,14 @@ def train(df, turbine_id):
 
 
 # ===================== 主执行流程 =====================
-data_path = '/home/ubuntu/workspace/Wind-power/data'
+data_path = '/root/model/data'
 files = [f for f in os.listdir(data_path) if f.split('.')[0].isdigit()]
 files = sorted(files, key=lambda x: int(x.split('.')[0]))
 
 for f in files:
     # 数据加载与预处理
     df = pd.read_csv(os.path.join(data_path, f),
-                     parse_dates=['DATATIME'],
+                     parse_dates={'datetime': ['DATATIME']},
                      infer_datetime_format=True)
 
     turbine_id = int(f.split('.')[0])
