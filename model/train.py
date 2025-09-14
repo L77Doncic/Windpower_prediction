@@ -227,13 +227,34 @@ def train(df, turbine_id, input_len, pred_len, epoch_num, batch_size, learning_r
     def safe_arr(a):
         return np.array(a) if len(a) > 0 else np.array([0])
 
+    # 只对前 n_plot 点计算指标，保持与可视化一致
+    y_true = safe_arr(true_y[:n_plot])
+    y_pred = safe_arr(pred_y[:n_plot])
+    y_corr = safe_arr(corrected_pred_y[:n_plot])
+
+    # 现有指标
     print("---------------------------------------------------------")
-    print(f'ACC of NRMSE between pred and true: {models.calculate_acc_nrmse(safe_arr(pred_y[:n_plot]), safe_arr(true_y[:n_plot])):.4f}')
-    print(f'ACC of NRMSE between corrected_pred and true: {models.calculate_acc_nrmse(safe_arr(corrected_pred_y[:n_plot]), safe_arr(true_y[:n_plot])):.4f}')
-    print(f'ACC of NMAE between pred and true: {models.calculate_acc_nmae(safe_arr(pred_y[:n_plot]), safe_arr(true_y[:n_plot])):.4f}')
-    print(f'ACC of NMAE between corrected_pred and true: {models.calculate_acc_nmae(safe_arr(corrected_pred_y[:n_plot]), safe_arr(true_y[:n_plot])):.4f}')
-    print(f'R2 between pred and true: {models.calculate_r2(safe_arr(pred_y[:n_plot]), safe_arr(true_y[:n_plot])):.4f}')
-    print(f'R2 between corrected_pred and true: {models.calculate_r2(safe_arr(corrected_pred_y[:n_plot]), safe_arr(true_y[:n_plot])):.4f}')
+    print(f'ACC of NRMSE between pred and true: {models.calculate_acc_nrmse(y_pred, y_true):.4f}')
+    print(f'ACC of NRMSE between corrected_pred and true: {models.calculate_acc_nrmse(y_corr, y_true):.4f}')
+    print(f'ACC of NMAE between pred and true: {models.calculate_acc_nmae(y_pred, y_true):.4f}')
+    print(f'ACC of NMAE between corrected_pred and true: {models.calculate_acc_nmae(y_corr, y_true):.4f}')
+    print(f'R2 between pred and true: {models.calculate_r2(y_pred, y_true):.4f}')
+    print(f'R2 between corrected_pred and true: {models.calculate_r2(y_corr, y_true):.4f}')
+
+    # 新增：RMSE 和 MAE（按原始定义）
+    try:
+        rmse_pred = float(np.sqrt(np.mean((y_pred - y_true) ** 2)))
+        rmse_corr = float(np.sqrt(np.mean((y_corr - y_true) ** 2)))
+        mae_pred = float(np.mean(np.abs(y_pred - y_true)))
+        mae_corr = float(np.mean(np.abs(y_corr - y_true)))
+    except Exception as e:
+        print(f"Error computing RMSE/MAE: {e}")
+        rmse_pred = rmse_corr = mae_pred = mae_corr = float('nan')
+
+    print(f'RMSE between pred and true: {rmse_pred:.4f}')
+    print(f'RMSE between corrected_pred and true: {rmse_corr:.4f}')
+    print(f'MAE between pred and true: {mae_pred:.4f}')
+    print(f'MAE between corrected_pred and true: {mae_corr:.4f}')
     print("---------------------------------------------------------\n\n")
 
 
