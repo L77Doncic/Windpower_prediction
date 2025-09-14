@@ -22,6 +22,8 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+import pandas as pd
+
 
 # reuse your modules
 import models
@@ -359,8 +361,8 @@ def train_ablation(df, turbine_id,
 # ---------------------------
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--mode', type=str, default='dmd', choices=['dmd', 'fusion', 'gan'],
-                        help='ablation mode: dmd|fusion|gan')
+    parser.add_argument('--mode', type=str, default='baseline', choices=['baseline','dmd', 'fusion', 'gan'],
+                    help='ablation mode: baseline|dmd|fusion|gan')
     parser.add_argument('--data', type=str, default='/root/model/data', help='data directory')
     parser.add_argument('--turbine', type=int, default=None, help='single turbine id to run (default: run all files)')
     parser.add_argument('--epochs', type=int, default=20)
