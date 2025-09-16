@@ -151,7 +151,7 @@ class MambaBlock(nn.Module):
         self.embedding = nn.Linear(input_dim, d_model)
         self.pos_encoder = PositionalEncoding(d_model)
 
-        # 使用 Mamba 替换 Transformer
+        # 使用 Mamba
         self.mamba_layers = nn.ModuleList([
             Mamba(
                 d_model=d_model,

@@ -1,3 +1,4 @@
+import os
 import torch
 import joblib
 from torch.utils.data import Dataset
@@ -68,15 +69,18 @@ class WindDataset(Dataset):
             self.scaler_x2.fit(train_data[self.future_cols].values)
             self.scaler_y.fit(train_data[self.target_cols].values)
 
+            # 确保output目录存在
+            os.makedirs('output', exist_ok=True)
+            
             # 保存scaler
-            joblib.dump(self.scaler_x1, f'output\\scaler_{self.tid}_x1.pkl')
-            joblib.dump(self.scaler_x2, f'output\\scaler_{self.tid}_x2.pkl')
-            joblib.dump(self.scaler_y, f'output\\scaler_{self.tid}_y.pkl')
+            joblib.dump(self.scaler_x1, f'output/scaler_{self.tid}_x1.pkl')
+            joblib.dump(self.scaler_x2, f'output/scaler_{self.tid}_x2.pkl')
+            joblib.dump(self.scaler_y, f'output/scaler_{self.tid}_y.pkl')
         else:
             # 加载训练集保存的scaler
-            self.scaler_x1 = joblib.load(f'output\\scaler_{self.tid}_x1.pkl')
-            self.scaler_x2 = joblib.load(f'output\\scaler_{self.tid}_x2.pkl')
-            self.scaler_y = joblib.load(f'output\\scaler_{self.tid}_y.pkl')
+            self.scaler_x1 = joblib.load(f'output/scaler_{self.tid}_x1.pkl')
+            self.scaler_x2 = joblib.load(f'output/scaler_{self.tid}_x2.pkl')
+            self.scaler_y = joblib.load(f'output/scaler_{self.tid}_y.pkl')
 
         # 对所有数据应用归一化（使用训练集的scaler参数）
         x1_norm = self.scaler_x1.transform(df[self.use_cols].values)

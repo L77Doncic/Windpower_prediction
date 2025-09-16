@@ -65,7 +65,7 @@ def train(df, turbine_id, input_len, pred_len, batch_size, learning_rate, epoch_
     early_stopping = models.EarlyStopping(
         patience=patience,
         verbose=True,
-        checkpoint_dir='c:\\Users\\18307\\Desktop\\transformer\\checkpoints'
+        checkpoint_dir='/root/transformer/checkpoints'
     )
 
     # ===================== 训练循环 =====================
@@ -155,7 +155,7 @@ def train(df, turbine_id, input_len, pred_len, batch_size, learning_rate, epoch_
     print("Loading best model for testing...")
     model = models.MultiTaskModel().to(device)
     model.load_state_dict(torch.load(
-        'c:\\Users\\18307\\Desktop\\transformer\\checkpoints\\best_model.pth'
+        '/root/transformer/checkpoints/best_model.pth'
     ))
     model.eval()
 
@@ -236,7 +236,7 @@ if __name__ == '__main__':
     import torch.multiprocessing as mp
     mp.set_start_method('spawn', force=True)  # Windows 多进程安全启动
 
-    data_path = r'c:\Users\18307\Desktop\transformer\data'
+    data_path = r'/root/transformer/data/'
     files = [f for f in os.listdir(data_path) if f.split('.')[0].isdigit()]
     files = sorted(files, key=lambda x: int(x.split('.')[0]))
 
