@@ -1,4 +1,4 @@
-# Multi-task Wind Power Forecasting via Mamba-based Selective State-Space Modeling with Dynamic Mode Decomposition
+# Wind Power Forecasting with Mamba and DMD
 
 ## Overview
 
