@@ -21,6 +21,11 @@ from utils import build_hankel_matrix, dmd_decomposition, reconstruct_error, cor
 import warnings
 warnings.filterwarnings('ignore')
 
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_PLOTS_DIR = os.path.join(_PROJECT_ROOT, 'output', 'plots')
+_METRICS_DIR = os.path.join(_PROJECT_ROOT, 'output', 'metrics')
+_CHECKPOINTS_DIR = os.path.join(_PROJECT_ROOT, 'output', 'checkpoints')
+
 
 class BaselineMamba(nn.Module):
     """Base Model: TCN → Mamba → Attention → heads (no fusion, no DMD)"""
@@ -86,8 +91,8 @@ class BaselineMambaFusion(nn.Module):
 
 
 def eval_and_save_plots(true_arr, pred_arr, corr_arr, turbine_id, plot_head_n=100):
-    os.makedirs('/root/model/plots', exist_ok=True)
-    os.makedirs('/root/model/metrics', exist_ok=True)
+    os.makedirs(_PLOTS_DIR, exist_ok=True)
+    os.makedirs(_METRICS_DIR, exist_ok=True)
 
     n_plot = min(plot_head_n, true_arr.size)
     plt.figure(figsize=(12, 3))
@@ -96,7 +101,7 @@ def eval_and_save_plots(true_arr, pred_arr, corr_arr, turbine_id, plot_head_n=10
     plt.plot(corr_arr[:n_plot], '-o', label='Corrected Pred')
     plt.legend()
     plt.tight_layout()
-    plt.savefig(f'/root/model/plots/turbine_{turbine_id}_ablation_pred.png')
+    plt.savefig(os.path.join(_PLOTS_DIR, f'turbine_{turbine_id}_ablation_pred.png'))
     plt.close()
 
     def rmse(a, b): return float(np.sqrt(np.mean((a - b) ** 2))) if a.size > 0 else float('nan')
@@ -128,8 +133,11 @@ def eval_and_save_plots(true_arr, pred_arr, corr_arr, turbine_id, plot_head_n=10
 def train_ablation(df, turbine_id,
                    mode='dmd',
                    input_len=120*4, pred_len=24*4,
-                   epoch_num=20, batch_size=128, lr=1e-3, patience=10,
-                   num_workers=4, device=None):
+                   epoch_num=20, batch_size=128, lr=1.64e-3, patience=10,
+                   num_workers=4, device=None,
+                   mamba_hidden=128, tcn_channels=None, dropout=0.2, huber_delta=1.36):
+    if tcn_channels is None:
+        tcn_channels = [64, 128, 256]
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -145,15 +153,19 @@ def train_ablation(df, turbine_id,
     if use_future:
         model = BaselineMambaFusion(input_feat=train_dataset.x1.shape[1] if len(train_dataset.x1.shape) > 1 else 13,
                                     future_feat_num=len(train_dataset.future_cols) if hasattr(train_dataset, 'future_cols') else 5,
-                                    mamba_hidden=256, pred_len=pred_len).to(device)
+                                    mamba_hidden=mamba_hidden, pred_len=pred_len,
+                                    tcn_channels=tcn_channels, dropout=dropout).to(device)
     else:
         input_feat = train_dataset.x1.shape[1] if len(train_dataset.x1.shape) > 1 else 13
-        model = BaselineMamba(input_feat=input_feat, mamba_hidden=256, pred_len=pred_len).to(device)
+        model = BaselineMamba(input_feat=input_feat, mamba_hidden=mamba_hidden, pred_len=pred_len,
+                              tcn_channels=tcn_channels, dropout=dropout).to(device)
 
     opt = torch.optim.Adam(model.parameters(), lr=lr, betas=(0.5, 0.999))
-    criterion = models.DynamicWeightedLoss(total_epochs=epoch_num, delta=1.0)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epoch_num, eta_min=1e-5)
+    criterion = models.DynamicWeightedLoss(total_epochs=epoch_num, delta=huber_delta)
 
-    early_stopper = models.EarlyStopping(patience=patience, verbose=True, checkpoint_dir='/root/model/checkpoints')
+    early_stopper = models.EarlyStopping(patience=patience, verbose=True, checkpoint_dir=_CHECKPOINTS_DIR,
+                                         model_name=f'turbine_{turbine_id}')
 
     for epoch in range(epoch_num):
         model.train()
@@ -164,6 +176,7 @@ def train_ablation(df, turbine_id,
             _, _, loss = criterion(outputs, y, epoch)
             opt.zero_grad()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
             opt.step()
             epoch_losses.append(loss.item())
 
@@ -176,13 +189,14 @@ def train_ablation(df, turbine_id,
                 _, _, v_loss = criterion(out, y, epoch)
                 val_losses.append(v_loss.item())
         val_loss = float(np.mean(val_losses)) if len(val_losses) > 0 else 0.0
-        print(f"Epoch {epoch+1}/{epoch_num} | train_loss: {np.mean(epoch_losses):.6f} | val_loss: {val_loss:.6f}")
+        scheduler.step()
+        print(f"Epoch {epoch+1}/{epoch_num} | train_loss: {np.mean(epoch_losses):.6f} | val_loss: {val_loss:.6f} | lr: {scheduler.get_last_lr()[0]:.6f}")
         early_stopper(val_loss, model)
         if early_stopper.early_stop:
             print("Early stopping triggered.")
             break
 
-    best_path = '/root/model/checkpoints/best_model.pth'
+    best_path = os.path.join(_CHECKPOINTS_DIR, f'turbine_{turbine_id}.pth')
     if os.path.exists(best_path):
         model.load_state_dict(torch.load(best_path, map_location=device))
         model.to(device)
@@ -238,9 +252,10 @@ def train_ablation(df, turbine_id,
         'mae_corr': per_mae_corr
     }
     hdf = pd.DataFrame(horizon_df)
-    os.makedirs('/root/model/metrics', exist_ok=True)
-    hdf.to_csv(f'/root/model/metrics/turbine_{turbine_id}_ablation_per_horizon.csv', index=True)
-    print(f"Saved per-horizon CSV to /root/model/metrics/turbine_{turbine_id}_ablation_per_horizon.csv")
+    os.makedirs(_METRICS_DIR, exist_ok=True)
+    metrics_path = os.path.join(_METRICS_DIR, f'turbine_{turbine_id}_ablation_per_horizon.csv')
+    hdf.to_csv(metrics_path, index=True)
+    print(f"Saved per-horizon CSV to {metrics_path}")
 
     eval_and_save_plots(y_true_flat, y_pred_flat, y_corr_flat, turbine_id, plot_head_n=100)
 
@@ -249,11 +264,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', type=str, default='baseline', choices=['baseline', 'dmd', 'fusion', 'full'],
                         help='ablation mode: baseline|dmd|fusion|full')
-    parser.add_argument('--data', type=str, default='/root/model/data', help='data directory')
+    parser.add_argument('--data', type=str, default=os.path.join(_PROJECT_ROOT, 'data'), help='data directory')
     parser.add_argument('--turbine', type=int, default=None, help='single turbine id to run (default: run all files)')
     parser.add_argument('--epochs', type=int, default=20)
     parser.add_argument('--batch', type=int, default=128)
-    parser.add_argument('--lr', type=float, default=1e-3)
+    parser.add_argument('--lr', type=float, default=1.64e-3)
     args = parser.parse_args()
 
     files = []
@@ -281,9 +296,9 @@ def main():
                 df.rename(columns={'datetime': 'DATATIME'}, inplace=True)
             elif 'DATETIME' in df.columns:
                 df.rename(columns={'DATETIME': 'DATATIME'}, inplace=True)
-        df['DATATIME'] = pd.to_datetime(df['DATATIME'], errors='coerce', infer_datetime_format=True)
+        df['DATATIME'] = pd.to_datetime(df['DATATIME'], errors='coerce')
         if df['DATATIME'].isna().sum() > 0:
-            df['DATATIME'] = pd.to_datetime(df['DATATIME'], errors='coerce', dayfirst=True, infer_datetime_format=True)
+            df['DATATIME'] = pd.to_datetime(df['DATATIME'], errors='coerce', dayfirst=True)
         for col in df.columns:
             if col == 'DATATIME':
                 continue
@@ -312,3 +327,7 @@ def main():
             continue
 
     print("All done.")
+
+
+if __name__ == '__main__':
+    main()

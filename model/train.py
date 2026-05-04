@@ -19,6 +19,10 @@ from utils import build_hankel_matrix, dmd_decomposition, reconstruct_error, cor
 import warnings
 warnings.filterwarnings('ignore')
 
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_PLOTS_DIR = os.path.join(_PROJECT_ROOT, 'output', 'plots')
+_CHECKPOINTS_DIR = os.path.join(_PROJECT_ROOT, 'output', 'checkpoints')
+
 
 def fit_dmd_on_validation(model, val_loader, device, K=20):
     """Fit DMD on validation residuals. Returns (Phi, eigenvalues, last_error_state)."""
@@ -107,6 +111,7 @@ def train(df, turbine_id, input_len, pred_len, epoch_num, batch_size, learning_r
 
     # 优化器
     optimizer = torch.optim.Adam(generator.parameters(), lr=learning_rate, betas=(0.5, 0.999))
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epoch_num, eta_min=1e-5)
 
     # 动态加权 Huber 损失（论文公式7）
     criterion = models.DynamicWeightedLoss(total_epochs=epoch_num, delta=1.0)
@@ -114,7 +119,8 @@ def train(df, turbine_id, input_len, pred_len, epoch_num, batch_size, learning_r
     train_epochs_loss = []
     valid_epochs_loss = []
     early_stopping = models.EarlyStopping(patience=patience, verbose=True,
-                                          checkpoint_dir='../checkpoints')
+                                          checkpoint_dir=_CHECKPOINTS_DIR,
+                                          model_name=f'turbine_{turbine_id}')
 
     # 训练
     for epoch in tqdm(range(epoch_num), desc="Epochs"):
@@ -129,6 +135,7 @@ def train(df, turbine_id, input_len, pred_len, epoch_num, batch_size, learning_r
             outputs = generator(x1, x2)
             _, _, loss = criterion(outputs, y, epoch)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(generator.parameters(), max_norm=1.0)
             optimizer.step()
             epoch_loss.append(loss.item())
 
@@ -149,7 +156,8 @@ def train(df, turbine_id, input_len, pred_len, epoch_num, batch_size, learning_r
 
         val_loss = np.average(valid_epoch_loss) if len(valid_epoch_loss) > 0 else 0.0
         valid_epochs_loss.append(val_loss)
-        print(f'Valid Loss: {val_loss:.4f}')
+        scheduler.step()
+        print(f'Valid Loss: {val_loss:.4f} | LR: {scheduler.get_last_lr()[0]:.6f}')
 
         # ==================early stopping======================
         early_stopping(val_loss, model=generator)
@@ -159,7 +167,7 @@ def train(df, turbine_id, input_len, pred_len, epoch_num, batch_size, learning_r
 
     # ===================== DMD fitting on validation ============================
     # 从 checkpoint 加载 best model
-    best_checkpoint_path = os.path.join('..', 'checkpoints', 'best_model.pth')
+    best_checkpoint_path = os.path.join(_CHECKPOINTS_DIR, f'turbine_{turbine_id}.pth')
     if os.path.exists(best_checkpoint_path):
         generator = models.MultiTaskModel(feat_num=13)
         generator.load_state_dict(torch.load(best_checkpoint_path, map_location=device))
@@ -209,9 +217,8 @@ def train(df, turbine_id, input_len, pred_len, epoch_num, batch_size, learning_r
     plt.legend()
     plt.tight_layout()
 
-    plot_dir = '/root/model/plots'
-    os.makedirs(plot_dir, exist_ok=True)
-    plt.savefig(f'{plot_dir}/turbine_{turbine_id}_prediction.png')
+    os.makedirs(_PLOTS_DIR, exist_ok=True)
+    plt.savefig(os.path.join(_PLOTS_DIR, f'turbine_{turbine_id}_prediction.png'))
     plt.close()
 
     # 评估指标
@@ -248,7 +255,7 @@ def train(df, turbine_id, input_len, pred_len, epoch_num, batch_size, learning_r
 
 # ===================== 主执行流程 =====================
 if __name__ == '__main__':
-    data_path = '/root/model/data'
+    data_path = os.path.join(_PROJECT_ROOT, 'data')
 
     if not os.path.isdir(data_path):
         raise FileNotFoundError(f"Data directory not found: {data_path}")
@@ -261,7 +268,7 @@ if __name__ == '__main__':
     pred_len = 24 * 4
     epoch_num = 20
     batch_size = 128
-    learning_rate = 0.001
+    learning_rate = 0.00164
     patience = 10
 
     for f in files:
@@ -296,11 +303,11 @@ if __name__ == '__main__':
             continue
 
         # 尝试解析时间：先常规解析，再尝试 dayfirst=True（处理 13/1/2022 类型）
-        df['DATATIME'] = pd.to_datetime(df['DATATIME'], errors='coerce', infer_datetime_format=True)
+        df['DATATIME'] = pd.to_datetime(df['DATATIME'], errors='coerce')
         n_nat = df['DATATIME'].isna().sum()
         if n_nat > 0:
             print(f"Warning: {n_nat} DATATIME values could not be parsed with infer format. Trying dayfirst=True.")
-            df['DATATIME'] = pd.to_datetime(df['DATATIME'], errors='coerce', dayfirst=True, infer_datetime_format=True)
+            df['DATATIME'] = pd.to_datetime(df['DATATIME'], errors='coerce', dayfirst=True)
         n_nat2 = df['DATATIME'].isna().sum()
         if n_nat2 > 0:
             print(f"After dayfirst attempt, {n_nat2} DATATIME still NaT. Sample problematic rows:")

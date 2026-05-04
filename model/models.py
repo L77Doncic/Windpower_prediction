@@ -6,8 +6,10 @@ import numpy as np
 from mamba_ssm import Mamba
 from sklearn.metrics import r2_score
 
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 class EarlyStopping:
-    def __init__(self, patience=7, verbose=False, delta=0, checkpoint_dir='/root/model/checkpoints'):
+    def __init__(self, patience=7, verbose=False, delta=0, checkpoint_dir=None, model_name='best_model'):
         self.val_loss_min = np.inf
         self.patience = patience
         self.delta = delta
@@ -15,9 +17,17 @@ class EarlyStopping:
         self.counter = 0
         self.best_score = None
         self.early_stop = False
+        if checkpoint_dir is None:
+            checkpoint_dir = os.path.join(_PROJECT_ROOT, 'output', 'checkpoints')
         os.makedirs(checkpoint_dir, exist_ok=True)
-        self.checkpoint_path = os.path.join(checkpoint_dir, 'best_model.pth')
+        self.checkpoint_path = os.path.join(checkpoint_dir, f'{model_name}.pth')
     def __call__(self, val_loss, model):
+        if np.isnan(val_loss) or np.isinf(val_loss):
+            print(f"val_loss={val_loss:.6f} (NaN/Inf, skipping)")
+            self.counter += 1
+            if self.counter >= self.patience:
+                self.early_stop = True
+            return
         print(f"val_loss={val_loss:.6f}")
         score = -val_loss
         if self.best_score is None:
@@ -150,7 +160,8 @@ class PositionalEncoding(nn.Module):
         return x + self.position_embedding(positions)
 
 class MambaBlock(nn.Module):
-    def __init__(self, input_dim, d_model=256, num_layers=2, dropout=0.1):
+    def __init__(self, input_dim, d_model=256, num_layers=2, dropout=0.1,
+                 d_state=8, d_conv=4, expand=2):
         super().__init__()
         self.embedding = nn.Linear(input_dim, d_model)
         self.pos_encoder = PositionalEncoding(d_model)
@@ -158,18 +169,19 @@ class MambaBlock(nn.Module):
         self.mamba_layers = nn.ModuleList([
             Mamba(
                 d_model=d_model,
-                d_state=16,
-                d_conv=4,
-                expand=2,
+                d_state=d_state,
+                d_conv=d_conv,
+                expand=expand,
             ) for _ in range(num_layers)
         ])
+        self.norms = nn.ModuleList([nn.LayerNorm(d_model) for _ in range(num_layers)])
         self.proj = nn.Linear(d_model, d_model)
     def forward(self, x):
         x_embed = self.embedding(x)
         x_pos = self.pos_encoder(x_embed)
         x_pos = self.dropout(x_pos)
-        for mamba_layer in self.mamba_layers:
-            x_pos = mamba_layer(x_pos)
+        for mamba_layer, norm in zip(self.mamba_layers, self.norms):
+            x_pos = norm(mamba_layer(x_pos))
         return self.proj(x_pos)
 
 class MultiTaskModel(nn.Module):
@@ -179,7 +191,10 @@ class MultiTaskModel(nn.Module):
                  tcn_channels=[64, 128, 256],
                  mamba_hidden=256,
                  pred_len=96,
-                 dropout=0.1):
+                 dropout=0.2,
+                 mamba_d_state=8,
+                 mamba_d_conv=4,
+                 mamba_expand=2):
         super().__init__()
         self.feat_num = feat_num
         self.pred_len = pred_len
@@ -193,6 +208,9 @@ class MultiTaskModel(nn.Module):
             d_model=mamba_hidden,
             num_layers=2,
             dropout=dropout,
+            d_state=mamba_d_state,
+            d_conv=mamba_d_conv,
+            expand=mamba_expand,
         )
         self.attention = TemporalAttention(mamba_hidden)
         self.future_resnet = ResNet(input_channels=future_feat_num, output_size=pred_len, dropout=dropout)

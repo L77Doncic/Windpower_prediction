@@ -1,9 +1,13 @@
+import os
 import torch
 import joblib
 from torch.utils.data import Dataset
 from sklearn.preprocessing import StandardScaler
 import warnings
 warnings.filterwarnings('ignore')
+
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_OUTPUT_DIR = os.path.join(_PROJECT_ROOT, 'output', 'scaler')
 
 class WindDataset(Dataset):
     def __init__(self, data, tid, data_type='train',
@@ -49,15 +53,14 @@ class WindDataset(Dataset):
             self.scaler_x1.fit(train_data[self.use_cols].values)
             self.scaler_x2.fit(train_data[self.future_cols].values)
             self.scaler_y.fit(train_data[self.target_cols].values)
-            import os
-            os.makedirs('/root/model/output', exist_ok=True)
-            joblib.dump(self.scaler_x1, f'/root/model/output/scaler_{self.tid}_x1.pkl')
-            joblib.dump(self.scaler_x2, f'/root/model/output/scaler_{self.tid}_x2.pkl')
-            joblib.dump(self.scaler_y, f'/root/model/output/scaler_{self.tid}_y.pkl')
+            os.makedirs(_OUTPUT_DIR, exist_ok=True)
+            joblib.dump(self.scaler_x1, os.path.join(_OUTPUT_DIR, f'scaler_{self.tid}_x1.pkl'))
+            joblib.dump(self.scaler_x2, os.path.join(_OUTPUT_DIR, f'scaler_{self.tid}_x2.pkl'))
+            joblib.dump(self.scaler_y, os.path.join(_OUTPUT_DIR, f'scaler_{self.tid}_y.pkl'))
         else:
-            self.scaler_x1 = joblib.load(f'/root/model/output/scaler_{self.tid}_x1.pkl')
-            self.scaler_x2 = joblib.load(f'/root/model/output/scaler_{self.tid}_x2.pkl')
-            self.scaler_y = joblib.load(f'/root/model/output/scaler_{self.tid}_y.pkl')
+            self.scaler_x1 = joblib.load(os.path.join(_OUTPUT_DIR, f'scaler_{self.tid}_x1.pkl'))
+            self.scaler_x2 = joblib.load(os.path.join(_OUTPUT_DIR, f'scaler_{self.tid}_x2.pkl'))
+            self.scaler_y = joblib.load(os.path.join(_OUTPUT_DIR, f'scaler_{self.tid}_y.pkl'))
         x1_norm = self.scaler_x1.transform(df[self.use_cols].values)
         x2_norm = self.scaler_x2.transform(df[self.future_cols].values)
         y_norm = self.scaler_y.transform(df[self.target_cols].values)

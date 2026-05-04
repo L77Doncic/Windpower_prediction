@@ -22,7 +22,7 @@ def data_preprocess(df):
         df.loc[outliers_index, col] = np.nan
     df['DATATIME'] = pd.to_datetime(df['DATATIME'])
     df.set_index('DATATIME', inplace=True)
-    df = df.resample(rule='15T', label='right', closed='right').interpolate(method='linear',
+    df = df.resample(rule='15min', label='right', closed='right').interpolate(method='linear',
                                                                             limit_direction='both').reset_index()
     if not isinstance(df.index, pd.DatetimeIndex):
         df['DATATIME'] = pd.to_datetime(df['DATATIME'])
