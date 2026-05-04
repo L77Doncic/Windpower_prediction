@@ -1,6 +1,3 @@
-# PDF
-ICIC 2026.pdf
-
 # Claude
 .claude/
 
@@ -19,9 +16,6 @@ build/
 # OS
 .DS_Store
 Thumbs.db
-
-# Model outputs
-output/
 
 # Jupyter
 .ipynb_checkpoints/
