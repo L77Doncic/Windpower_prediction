@@ -1,0 +1,357 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import os
+import sys
+import pandas as pd
+import numpy as np
+import torch
+import matplotlib.pyplot as plt
+from tqdm import tqdm
+from torch.utils.data import DataLoader
+
+# 导入你自己的模块（请确保这些文件在同一目录或 PYTHONPATH 中）
+import models
+from dataloader import WindDataset
+from dataset import data_preprocess, feature_engineer
+from utils import build_hankel_matrix, dmd_decomposition, reconstruct_error, correct_predictions, compute_L
+
+import warnings
+warnings.filterwarnings('ignore')
+
+
+def fit_dmd_on_validation(model, val_loader, device, K=20):
+    """Fit DMD on validation residuals. Returns (Phi, eigenvalues, last_error_state)."""
+    model.eval()
+    val_errors = []
+    with torch.no_grad():
+        for data in val_loader:
+            x1, x2, y = [d.to(device) for d in data]
+            outputs = model(x1, x2)
+            # Collect YD15 error (task index 1)
+            pred_yd15 = outputs[0, :, 1].cpu().numpy()
+            true_yd15 = y[0, :, 1].cpu().numpy()
+            val_errors.append(true_yd15 - pred_yd15)
+
+    if len(val_errors) == 0:
+        return None, None, None
+
+    # Concatenate all validation error sequences
+    error_sequence = np.concatenate(val_errors)
+    if len(error_sequence) <= K + 1:
+        return None, None, None
+
+    X_data = error_sequence[:-1]
+    Y_data = error_sequence[1:]
+    L = compute_L(X_data, K)
+    X = build_hankel_matrix(X_data, K, L)
+    Y = build_hankel_matrix(Y_data, K, L)
+    Phi, eigenvalues = dmd_decomposition(X, Y)
+
+    # Store the last K error states as initial condition for test extrapolation
+    last_error_state = error_sequence[-K:]
+    return Phi, eigenvalues, last_error_state
+
+
+def apply_dmd_correction(pred_yd15, Phi, eigenvalues, initial_error, K=20):
+    """Apply DMD correction to test predictions using validation-learned dynamics."""
+    original_length = len(pred_yd15)
+    if Phi is None or original_length < 5:
+        return pred_yd15
+
+    try:
+        reconstructed_error = reconstruct_error(
+            Phi, eigenvalues,
+            initial_error=initial_error,
+            K=K,
+            original_length=original_length
+        )
+        return correct_predictions(pred_yd15, reconstructed_error)
+    except Exception as e:
+        print(f"DMD correction failed: {e}")
+        return pred_yd15
+
+
+def train(df, turbine_id, input_len, pred_len, epoch_num, batch_size, learning_rate, patience):
+    # 创建 Dataset
+    train_dataset = WindDataset(df, turbine_id, input_len=input_len, pred_len=pred_len, data_type='train')
+    val_dataset = WindDataset(df, turbine_id, input_len=input_len, pred_len=pred_len, data_type='val')
+    test_dataset = WindDataset(df, turbine_id, input_len=input_len, pred_len=pred_len, data_type='test')
+
+    print(f'LEN | train_dataset:{len(train_dataset)}, val_dataset:{len(val_dataset)}, test_dataset:{len(test_dataset)}')
+
+    # 创建 DataLoader
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        drop_last=True,
+        num_workers=4
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        drop_last=True
+    )
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=1,
+        shuffle=False,
+        drop_last=False
+    )
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # 初始化模型
+    generator = models.MultiTaskModel(feat_num=13).to(device)
+
+    # 优化器
+    optimizer = torch.optim.Adam(generator.parameters(), lr=learning_rate, betas=(0.5, 0.999))
+
+    # 动态加权 Huber 损失（论文公式7）
+    criterion = models.DynamicWeightedLoss(total_epochs=epoch_num, delta=1.0)
+
+    train_epochs_loss = []
+    valid_epochs_loss = []
+    early_stopping = models.EarlyStopping(patience=patience, verbose=True,
+                                          checkpoint_dir='../checkpoints')
+
+    # 训练
+    for epoch in tqdm(range(epoch_num), desc="Epochs"):
+        # =====================Train============================
+        epoch_loss = []
+        generator.train()
+
+        for batch_id, data in enumerate(train_loader):
+            x1, x2, y = [d.to(device) for d in data]
+
+            optimizer.zero_grad()
+            outputs = generator(x1, x2)
+            _, _, loss = criterion(outputs, y, epoch)
+            loss.backward()
+            optimizer.step()
+            epoch_loss.append(loss.item())
+
+        avg_epoch_loss = np.average(epoch_loss) if len(epoch_loss) > 0 else 0.0
+        train_epochs_loss.append(avg_epoch_loss)
+        print(f"epoch={epoch+1}/{epoch_num} | Train Loss: {avg_epoch_loss:.4f}")
+
+        # =====================valid============================
+        generator.eval()
+        valid_epoch_loss = []
+
+        with torch.no_grad():
+            for data in val_loader:
+                x1, x2, y = [d.to(device) for d in data]
+                outputs = generator(x1, x2)
+                _, _, loss = criterion(outputs, y, epoch)
+                valid_epoch_loss.append(loss.item())
+
+        val_loss = np.average(valid_epoch_loss) if len(valid_epoch_loss) > 0 else 0.0
+        valid_epochs_loss.append(val_loss)
+        print(f'Valid Loss: {val_loss:.4f}')
+
+        # ==================early stopping======================
+        early_stopping(val_loss, model=generator)
+        if early_stopping.early_stop:
+            print(f"Early stopping at Epoch {epoch+1 - patience}")
+            break
+
+    # ===================== DMD fitting on validation ============================
+    # 从 checkpoint 加载 best model
+    best_checkpoint_path = os.path.join('..', 'checkpoints', 'best_model.pth')
+    if os.path.exists(best_checkpoint_path):
+        generator = models.MultiTaskModel(feat_num=13)
+        generator.load_state_dict(torch.load(best_checkpoint_path, map_location=device))
+        generator.to(device)
+        generator.eval()
+    else:
+        print(f"Warning: best model not found at {best_checkpoint_path}. Using current generator weights.")
+
+    # 在验证集上拟合 DMD
+    dmd_Phi, dmd_eigenvalues, dmd_initial_error = fit_dmd_on_validation(
+        generator, val_loader, device, K=20
+    )
+    if dmd_Phi is not None:
+        print(f"DMD fitted on validation: Phi shape={dmd_Phi.shape}, initial_error shape={dmd_initial_error.shape}")
+    else:
+        print("Warning: DMD fitting failed, will skip correction.")
+
+    # ===================== test ============================
+    true_y, pred_y, corrected_pred_y = [], [], []
+
+    with torch.no_grad():
+        for batch_id, data in enumerate(test_loader):
+            x1, x2, y = [d.to(device) for d in data]
+            outputs = generator(x1, x2)
+
+            out_all = outputs.cpu()
+            y_cpu = y.cpu()
+
+            pred_yd15 = out_all[0, :, 1].numpy()
+            true_yd15 = y_cpu[0, :, 1].numpy()
+
+            # 使用验证阶段学到的 DMD 模型修正测试预测
+            corrected = apply_dmd_correction(
+                pred_yd15, dmd_Phi, dmd_eigenvalues, dmd_initial_error, K=20
+            )
+
+            true_y.extend(true_yd15.tolist())
+            pred_y.extend(pred_yd15.tolist())
+            corrected_pred_y.extend(corrected.tolist())
+
+    # 可视化并保存
+    plt.figure(figsize=(12, 3))
+    n_plot = min(100, len(true_y))
+    plt.plot(true_y[:n_plot], '-o', label="True")
+    plt.plot(pred_y[:n_plot], '-o', label="Pred")
+    plt.plot(corrected_pred_y[:n_plot], '-o', label="Corrected Pred")
+    plt.legend()
+    plt.tight_layout()
+
+    plot_dir = '/root/model/plots'
+    os.makedirs(plot_dir, exist_ok=True)
+    plt.savefig(f'{plot_dir}/turbine_{turbine_id}_prediction.png')
+    plt.close()
+
+    # 评估指标
+    def safe_arr(a):
+        return np.array(a) if len(a) > 0 else np.array([0])
+
+    y_true = safe_arr(true_y[:n_plot])
+    y_pred = safe_arr(pred_y[:n_plot])
+    y_corr = safe_arr(corrected_pred_y[:n_plot])
+
+    print("---------------------------------------------------------")
+    print(f'ACC of NRMSE between pred and true: {models.calculate_acc_nrmse(y_pred, y_true):.4f}')
+    print(f'ACC of NRMSE between corrected_pred and true: {models.calculate_acc_nrmse(y_corr, y_true):.4f}')
+    print(f'ACC of NMAE between pred and true: {models.calculate_acc_nmae(y_pred, y_true):.4f}')
+    print(f'ACC of NMAE between corrected_pred and true: {models.calculate_acc_nmae(y_corr, y_true):.4f}')
+    print(f'R2 between pred and true: {models.calculate_r2(y_pred, y_true):.4f}')
+    print(f'R2 between corrected_pred and true: {models.calculate_r2(y_corr, y_true):.4f}')
+
+    try:
+        rmse_pred = float(np.sqrt(np.mean((y_pred - y_true) ** 2)))
+        rmse_corr = float(np.sqrt(np.mean((y_corr - y_true) ** 2)))
+        mae_pred = float(np.mean(np.abs(y_pred - y_true)))
+        mae_corr = float(np.mean(np.abs(y_corr - y_true)))
+    except Exception as e:
+        print(f"Error computing RMSE/MAE: {e}")
+        rmse_pred = rmse_corr = mae_pred = mae_corr = float('nan')
+
+    print(f'RMSE between pred and true: {rmse_pred:.4f}')
+    print(f'RMSE between corrected_pred and true: {rmse_corr:.4f}')
+    print(f'MAE between pred and true: {mae_pred:.4f}')
+    print(f'MAE between corrected_pred and true: {mae_corr:.4f}')
+    print("---------------------------------------------------------\n\n")
+
+
+# ===================== 主执行流程 =====================
+if __name__ == '__main__':
+    data_path = '/root/model/data'
+
+    if not os.path.isdir(data_path):
+        raise FileNotFoundError(f"Data directory not found: {data_path}")
+
+    files = [f for f in os.listdir(data_path) if f.split('.')[0].isdigit()]
+    files = sorted(files, key=lambda x: int(x.split('.')[0]))
+
+    # 全局模型参数（你可以按需要调整）
+    input_len = 120 * 4  # 示例
+    pred_len = 24 * 4
+    epoch_num = 20
+    batch_size = 128
+    learning_rate = 0.001
+    patience = 10
+
+    for f in files:
+        csv_path = os.path.join(data_path, f)
+        print(f'\nProcessing file: {csv_path}')
+
+        # ---------- robust csv read ----------
+        # 先以 string 读取，做更稳健的清洗与解析
+        try:
+            df = pd.read_csv(csv_path, dtype=str)
+        except Exception as e:
+            print(f"Error reading {csv_path}: {e}")
+            continue
+
+        # 删除Unnamed列（Excel导出时多出的索引列）
+        unnamed_cols = [c for c in df.columns if c.startswith('Unnamed')]
+        if unnamed_cols:
+            df.drop(columns=unnamed_cols, inplace=True)
+
+        # 去除列名前后的空白
+        df.columns = [c.strip() for c in df.columns]
+
+        # 兼容不同列名形式
+        if 'DATATIME' not in df.columns:
+            if 'datetime' in df.columns:
+                df.rename(columns={'datetime': 'DATATIME'}, inplace=True)
+            elif 'DATETIME' in df.columns:
+                df.rename(columns={'DATETIME': 'DATATIME'}, inplace=True)
+
+        if 'DATATIME' not in df.columns:
+            print(f"File {f} missing DATATIME column. Columns: {df.columns.tolist()}")
+            continue
+
+        # 尝试解析时间：先常规解析，再尝试 dayfirst=True（处理 13/1/2022 类型）
+        df['DATATIME'] = pd.to_datetime(df['DATATIME'], errors='coerce', infer_datetime_format=True)
+        n_nat = df['DATATIME'].isna().sum()
+        if n_nat > 0:
+            print(f"Warning: {n_nat} DATATIME values could not be parsed with infer format. Trying dayfirst=True.")
+            df['DATATIME'] = pd.to_datetime(df['DATATIME'], errors='coerce', dayfirst=True, infer_datetime_format=True)
+        n_nat2 = df['DATATIME'].isna().sum()
+        if n_nat2 > 0:
+            print(f"After dayfirst attempt, {n_nat2} DATATIME still NaT. Sample problematic rows:")
+            print(df[df['DATATIME'].isna()].head(10))
+            print("Skipping this file for manual inspection.")
+            continue
+
+        # 若列是字符串型的数字字段，尝试转换为数值（避免后续处理出错）
+        # 保持原有其他列为 string 的话，后面 data_preprocess 有些操作可能失败
+        for col in df.columns:
+            if col == 'DATATIME':
+                continue
+            # 尝试转换为 numeric（若不能转换则保持原字符串）
+            try:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+            except Exception:
+                pass
+
+        print("Columns after reading:", df.columns.tolist())
+        print("DATATIME dtype:", df['DATATIME'].dtype)
+
+        turbine_id = int(f.split('.')[0])
+        print(f'Processing turbine {turbine_id}')
+
+        # 如果需要针对特定风机清洗
+        if turbine_id == 11:
+            if 'YD15' in df.columns:
+                df = df[(df['YD15'] != 0.0) & (df['YD15'] != -754.0)]
+            else:
+                print("Warning: YD15 column not present, skipping turbine-specific filter.")
+
+        # 执行预处理与特征工程
+        try:
+            df = data_preprocess(df)
+            df = feature_engineer(df)
+        except Exception as e:
+            print(f"Data preprocessing/feature engineering failed for turbine {turbine_id}: {e}")
+            continue
+
+        # 启动训练（传入全局参数）
+        try:
+            train(df, turbine_id,
+                  input_len=input_len,
+                  pred_len=pred_len,
+                  epoch_num=epoch_num,
+                  batch_size=batch_size,
+                  learning_rate=learning_rate,
+                  patience=patience)
+        except Exception as e:
+            print(f"Training failed for turbine {turbine_id}: {e}")
+            # 继续处理下一个文件
+            continue
+
+    print("All done.")

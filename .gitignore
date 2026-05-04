@@ -1,0 +1,36 @@
+# PDF
+ICIC 2026.pdf
+
+# Claude
+.claude/
+
+# Duplicate CSV files
+14.csv
+model/14.csv
+model/data/
+transformer/data/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Model outputs
+checkpoints/
+output/
+plots/
+metrics/
+
+# Jupyter
+.ipynb_checkpoints/
